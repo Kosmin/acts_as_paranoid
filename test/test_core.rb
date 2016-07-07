@@ -40,9 +40,9 @@ class ParanoidTest < ParanoidBaseTest
   end
 
   def test_real_removal
-    ParanoidTime.first.destroy!
+    ParanoidTime.first.destroy_fully!
     ParanoidBoolean.delete_all!("name = 'extremely paranoid' OR name = 'really paranoid'")
-    ParanoidString.first.destroy!
+    ParanoidString.first.destroy_fully!
     assert_equal 2, ParanoidTime.count
     assert_equal 1, ParanoidBoolean.count
     assert_equal 0, ParanoidString.count
@@ -144,12 +144,18 @@ class ParanoidTest < ParanoidBaseTest
     assert_equal 0, ParanoidHasOneDependant.count
     assert_equal 1, NotParanoid.count
     assert_equal 0, HasOneNotParanoid.count
+
+    assert_equal 3, ParanoidTime.with_deleted.count
+    assert_equal 4, ParanoidHasManyDependant.with_deleted.count
+    assert_equal 3, ParanoidBelongsDependant.with_deleted.count
+    assert_equal @paranoid_boolean_count + 3, ParanoidBoolean.with_deleted.count
+    assert_equal 3, ParanoidHasOneDependant.with_deleted.count
   end
 
   def test_recursive_real_removal
     setup_recursive_tests
 
-    @paranoid_time_object.destroy!
+    @paranoid_time_object.destroy_fully!
 
     assert_equal 0, ParanoidTime.only_deleted.count
     assert_equal 1, ParanoidHasManyDependant.only_deleted.count
@@ -386,5 +392,25 @@ class ParanoidTest < ParanoidBaseTest
     ps = ParanoidString.create!(:deleted => 'not dead')
     2.times { ps.destroy }
     assert_equal 0, ParanoidString.with_deleted.where(:id => ps).count
+  end
+
+  def test_decrement_counters
+    paranoid_boolean = ParanoidBoolean.create(:name => "boolean")
+    paranoid_with_counter_cache = paranoid_boolean.create_paranoid_with_counter_cache(:name => "with_counter")
+
+    assert_equal 1, paranoid_boolean.reload.paranoid_with_counter_caches_count
+
+    paranoid_with_counter_cache.destroy
+    assert_equal 0, paranoid_boolean.reload.paranoid_with_counter_caches_count
+  end
+
+  def test_hard_destroy_decrement_counters
+    paranoid_boolean = ParanoidBoolean.create(:name => "boolean")
+    paranoid_with_counter_cache = paranoid_boolean.create_paranoid_with_counter_cache(:name => "with_counter")
+
+    assert_equal 1, paranoid_boolean.reload.paranoid_with_counter_caches_count
+
+    paranoid_with_counter_cache.destroy_fully!
+    assert_equal 0, paranoid_boolean.reload.paranoid_with_counter_caches_count
   end
 end

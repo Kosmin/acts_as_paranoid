@@ -74,8 +74,14 @@ module ActsAsParanoid
     protected
 
       def without_paranoid_default_scope
-        scope = self.all.unscoped
-        scope.where_values.delete(paranoid_default_scope_sql)
+        scope = self.all
+        if scope.where_values.include? paranoid_default_scope_sql
+          # ActiveRecord 4.1
+          scope.where_values.delete(paranoid_default_scope_sql)
+        else
+          scope = scope.with_default_scope
+          scope.where_values.delete(paranoid_default_scope_sql)
+        end
 
         scope
       end
@@ -89,31 +95,45 @@ module ActsAsParanoid
       self.send(self.class.paranoid_column)
     end
 
-    def destroy!
+    def destroy_fully!
       with_transaction_returning_status do
         run_callbacks :destroy do
           destroy_dependent_associations!
           # Handle composite keys, otherwise we would just use `self.class.primary_key.to_sym => self.id`.
-          self.class.delete_all!(Hash[[Array(self.class.primary_key), Array(self.id)].transpose]) if persisted?
+           if persisted?
+            affected_rows = self.class.delete_all!(Hash[[Array(self.class.primary_key), Array(self.id)].transpose])
+            if ActiveRecord::VERSION::MAJOR >= 4 && ActiveRecord::VERSION::MINOR >= 2
+              association_decrement_counters affected_rows
+            end
+          end
           self.paranoid_value = self.class.delete_now_value
           freeze
         end
       end
     end
 
-    def destroy
+    def destroy!
       if !deleted?
         with_transaction_returning_status do
           run_callbacks :destroy do
             # Handle composite keys, otherwise we would just use `self.class.primary_key.to_sym => self.id`.
-            self.class.delete_all(Hash[[Array(self.class.primary_key), Array(self.id)].transpose]) if persisted?
+            if persisted?
+              affected_rows = self.class.delete_all(Hash[[Array(self.class.primary_key), Array(self.id)].transpose])
+              if ActiveRecord::VERSION::MAJOR >= 4 && ActiveRecord::VERSION::MINOR >= 2
+                association_decrement_counters affected_rows
+              end
+            end
             self.paranoid_value = self.class.delete_now_value
             self
           end
         end
       else
-        destroy!
+        destroy_fully!
       end
+    end
+
+    def destroy
+      destroy!
     end
 
     def recover(options={})
@@ -144,7 +164,7 @@ module ActsAsParanoid
         # We can only recover by window if both parent and dependant have a
         # paranoid column type of :time.
         if self.class.paranoid_column_type == :time && klass.paranoid_column_type == :time
-          scope = scope.merge(klass.deleted_inside_time_window(paranoid_value, window))
+          scope = scope.deleted_inside_time_window(paranoid_value, window)
         end
 
         scope.each do |object|
@@ -187,6 +207,25 @@ module ActsAsParanoid
 
     def paranoid_value=(value)
       self.send("#{self.class.paranoid_column}=", value)
+    end
+
+    def association_decrement_counters(affected_rows)
+      if affected_rows > 0
+        each_counter_cached_associations do |association|
+          foreign_key = association.reflection.foreign_key.to_sym
+          unless destroyed_by_association && destroyed_by_association.foreign_key.to_sym == foreign_key
+            if send(association.reflection.name)
+              association.send(:decrement_counters)
+            end
+          end
+        end
+      end
+    end
+
+    def each_counter_cached_associations
+      _reflections.each do |name, reflection|
+        yield association(name.to_sym) if reflection.belongs_to? && reflection.counter_cache_column
+      end
     end
   end
 end
